@@ -79,6 +79,6 @@ impl<R: Read> WARCReader<R> {
         let content_len: usize = content_len_str.parse().expect("Failed to parse content len");
         self.buffer.resize(content_len, 0u8);
         self.reader.read_exact(&mut self.buffer[..]).expect("Failed to read content");
-        return true;
+        true
     }
 }
