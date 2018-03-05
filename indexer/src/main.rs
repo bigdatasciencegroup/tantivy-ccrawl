@@ -21,8 +21,7 @@ use flate2::read::MultiGzDecoder;
 use indicatif::ProgressBar;
 mod warc_reader;
 use self::warc_reader::WARCReader;
-use tantivy::tokenizer::{AlphaNumOnlyFilter, SimpleTokenizer, RemoveLongFilter, LowerCaser, Stemmer};
-use tantivy::tokenizer::Tokenizer;
+use tantivy::tokenizer::{Tokenizer, AlphaNumOnlyFilter, SimpleTokenizer, RemoveLongFilter, LowerCaser, Stemmer};
 use std::time::Duration;
 use curl::easy;
 use std::thread;
@@ -38,10 +37,27 @@ use itertools::Itertools;
 use std::sync::Arc;
 use indicatif::ProgressStyle;
 use chan::Receiver;
+use console::style;
+
+
+/// Number of WET files in a commit.
+const CHUNK_SIZE: usize = 10;
+
+const URL_ROOT: &'static str = "https://commoncrawl.s3.amazonaws.com/crawl-data/";
 
 const WAIT_AFTER_RETRY_SECONDS: u64 = 30u64;
 
-const URL_ROOT: &'static str = "https://commoncrawl.s3.amazonaws.com/crawl-data/"; 
+fn parse_shard_id(src: &str) -> Result<usize, String> {
+    if let Ok(shard_id) = src.parse() {
+        if shard_id >= 1 && shard_id <= 80 {
+            Ok(shard_id)
+        } else {
+            Err(String::from("Shard id much be between 1-80."))
+        }
+    } else {
+        Err(format!("{:?} is not an integer", src))
+    }
+}
 
 #[derive(StructOpt, Debug)]
 struct CliOption {
@@ -49,7 +65,7 @@ struct CliOption {
     #[structopt(short="i", long="index", help="Index directory", parse(from_os_str))]
     pub index_directory: PathBuf,
 
-    #[structopt(short="s", long="shard", help="Shard id (number between 1-80)")]
+    #[structopt(short="s", long="shard", parse(try_from_str="parse_shard_id"), help="Shard id (number between 1-80)")]
     pub shard_id: usize
 }
 
@@ -113,7 +129,6 @@ fn init(index_directory: &Path, shard_id: usize) -> tantivy::Result<PathBuf> {
     Ok(shard_directory)
 }
 
-const CHUNK_SIZE: usize = 100;
 
 pub struct WetData {
     pub wet_file: String,
@@ -157,6 +172,9 @@ impl DownloadToBuffer {
 }
 
 fn download(url: &str, progress_bar: ProgressBar) -> Result<Vec<u8>, curl::Error> {
+    progress_bar.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.yellow/blue}] {bytes}/{total_bytes} ({eta})")
+        .progress_chars("#>-"));
     let collector = DownloadToBuffer {
         data: Vec::new(),
         progress_bar: progress_bar,
@@ -173,10 +191,7 @@ fn download(url: &str, progress_bar: ProgressBar) -> Result<Vec<u8>, curl::Error
 fn download_with_retry(url: &str, num_retries: usize, progress_bars: Arc<MultiProgress>) -> Result<Vec<u8>, curl::Error> {
     assert!(num_retries > 0);
     for _ in 0..(num_retries - 1)  {
-        let progress_bar = progress_bars.add(ProgressBar::new(1));
-        progress_bar.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .progress_chars("#>-"));
+        let progress_bar = progress_bars.add(ProgressBar::new(120_000_000));
         if let Ok(buffer) = download(url, progress_bar) {
             return Ok(buffer);
         } else {
@@ -184,32 +199,19 @@ fn download_with_retry(url: &str, num_retries: usize, progress_bars: Arc<MultiPr
             thread::sleep(Duration::from_secs(WAIT_AFTER_RETRY_SECONDS))
         }
     }
-    let progress_bar = progress_bars.add(ProgressBar::new(1));
-    progress_bar.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-        .progress_chars("#>-"));
+    let progress_bar = progress_bars.add(ProgressBar::new(120_000_000));
     download(url, progress_bar)
 }
 
 fn download_wet(wet_files: WetFiles, send: chan::Sender<WetData>, progress_bars: Arc<MultiProgress>) -> Result<(), curl::Error> {
-    let download_progress_bar = progress_bars.add(ProgressBar::new(1_000));
-    download_progress_bar.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}"));
-    let num_wet_files_indexed = 1_000 - wet_files.len();
-    download_progress_bar.set_position(num_wet_files_indexed as u64);
-    download_progress_bar.set_message("Download");
-    download_progress_bar.tick();
-
     for wet_file in wet_files.files() {
         let url = format!("{}{}", URL_ROOT, wet_file);
         let wet_data: Vec<u8> = download_with_retry(&url, 10, progress_bars.clone())?;
-        download_progress_bar.inc(1u64);
         send.send(WetData {
             wet_file: wet_file.clone(),
             data: wet_data,
         })
     }
-    download_progress_bar.finish();
     Ok(())
 }
 
@@ -261,20 +263,29 @@ fn index_wet_file(wet_data: &WetData, schema: &Schema, index_writer: &mut IndexW
     }
 }
 
+
 fn main() {
     env_logger::init().unwrap();
     let cli_options = CliOption::from_args();
-//    if !(cli_options.shard_id >= 1 && cli_options.shard_id <= 80) {
-//
-//    }
-    resume_indexing(&cli_options.index_directory, cli_options.shard_id).expect("Indexing failed");
+    if !(cli_options.shard_id >= 1 && cli_options.shard_id <= 80) {
+        println!("{}", style("").red().bold());
+        return;
+    }
+    let result = resume_indexing(&cli_options.index_directory, cli_options.shard_id);
+    if let Err(tantivy::Error(tantivy::ErrorKind::FileAlreadyExists(lock_path), _)) = result {
+        let msg = format!("Directory already locked. If another indexer is not running, just remove {:?} and retry.", lock_path);
+        println!("{}", style(msg).red().bold());
+        return;
+    }
+    if let Err(e) = result {
+        println!("Failed with the following error:\n{:?}", style(e).red().bold());
+    }
 }
 
-fn indexing_wet_queue(index: Index, num_wet_files_indexed: usize, wet_queue: Receiver<WetData>, progress_bar: ProgressBar) -> tantivy::Result<()> {
+fn indexing_wet_queue(index: Index, wet_queue: Receiver<WetData>, progress_bar: ProgressBar) -> tantivy::Result<()> {
     progress_bar.tick();
     let schema = index.schema();
     let mut index_writer = index.writer_with_num_threads(2, 1_400_000_000)?;
-    progress_bar.set_position(num_wet_files_indexed as u64);
 
     for wet_files in wet_queue.into_iter().chunks(CHUNK_SIZE).into_iter() {
         let mut checkpoint = String::new();
@@ -365,12 +376,13 @@ fn resume_indexing(shards_directory: &Path, shard_id: usize) -> tantivy::Result<
 
     let index_progress_bar = progress_bars.add(ProgressBar::new(1_000));
     index_progress_bar.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] [{bar:40.red/blue}] {pos:>7}/{len:7} {msg}"));
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.yellow/blue}] {pos:>7}/{len:7} {eta}"));
 
     index_progress_bar.set_position(num_wet_files_indexed as u64);
-    index_progress_bar.set_message("Indexing");
+
+    { index.writer_with_num_threads(1, 30_000_000)?; }
     let _indexing_thread = thread::spawn(move || {
-        indexing_wet_queue(index, num_wet_files_indexed, recv, index_progress_bar).unwrap();
+        indexing_wet_queue(index,recv, index_progress_bar).unwrap();
     });
 
     progress_bars.join_and_clear().unwrap();
