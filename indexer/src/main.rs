@@ -124,7 +124,7 @@ fn init(index_directory: &Path, shard_id: usize) -> tantivy::Result<PathBuf> {
     let shard_directory = index_directory.join(&shard_subdir); 
     if !shard_directory.exists() {
         fs::create_dir(&shard_directory)?;
-        Index::create(&shard_directory, schema())?;
+        Index::create_in_dir(&shard_directory, schema())?;
     }
     Ok(shard_directory)
 }
@@ -272,8 +272,8 @@ fn main() {
         return;
     }
     let result = resume_indexing(&cli_options.index_directory, cli_options.shard_id);
-    if let Err(tantivy::Error(tantivy::ErrorKind::FileAlreadyExists(lock_path), _)) = result {
-        let msg = format!("Directory already locked. If another indexer is not running, just remove {:?} and retry.", lock_path);
+    if let Err(tantivy::Error::LockFailure(_)) = result {
+        let msg = format!("Directory already locked. If another indexer is not running, just remove and retry.");
         println!("{}", style(msg).red().bold());
         return;
     }
@@ -333,7 +333,7 @@ fn indexing_wet_queue(index: Index, wet_queue: Receiver<WetData>, progress_bar: 
         index_writer.garbage_collect_files()?;
 
         index_writer
-            .merge(&segment_ids)
+            .merge(&segment_ids)?
             .wait()
             .expect("Merge failed");
     }
@@ -345,7 +345,7 @@ fn resume_indexing(shards_directory: &Path, shard_id: usize) -> tantivy::Result<
     let mut wet_files = WetFiles::for_shard_id(shard_id);
 
     let index_directory = init(shards_directory, shard_id)?;
-    let index = Index::open(index_directory)?;
+    let index = Index::open_in_dir(index_directory)?;
     // overriding `en_stem` to remove alphanum only characters.
     // ... That way it will only affect indexing and not querying.
     index.tokenizers()
