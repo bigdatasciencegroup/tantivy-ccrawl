@@ -84,16 +84,16 @@ impl WetFiles {
 
     fn for_shard_id(shard_id: usize) -> WetFiles {
         let urls_text = include_str!("urls-list.txt");
-        assert!(shard_id >= 1);
-        assert!(shard_id <= 80);
         let urls: Vec<String> = urls_text
             .lines()
             .map(|s| s.to_string())
             .collect();
-        let start_idx = 1_000 * (shard_id - 1);
-        let stop_idx = 1_000 * shard_id;
+        let start_idx = 250 * (shard_id - 1);
+        let stop_idx = 250 * shard_id;
+        let urls = urls[start_idx..stop_idx].to_owned();
+        assert!(!urls.is_empty());
         WetFiles {
-            files: urls[start_idx..stop_idx].to_owned()
+            files: urls
         }
     }
 
