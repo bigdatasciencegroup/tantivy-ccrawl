@@ -59,14 +59,20 @@ fn parse_shard_id(src: &str) -> Result<usize, String> {
     }
 }
 
-#[derive(StructOpt, Debug)]
+#[derive(StructOpt, Clone, Debug)]
 struct CliOption {
     /// Needed parameter, the first on the command line.
     #[structopt(short="i", long="index", help="Index directory", parse(from_os_str))]
     pub index_directory: PathBuf,
 
     #[structopt(short="s", long="shard", parse(try_from_str="parse_shard_id"), help="Shard id (number between 1-80)")]
-    pub shard_id: usize
+    pub shard_id: usize,
+
+    #[structopt(short="t", long="num_threads", default_value="2", help="Number of threads")]
+    pub num_threads: usize,
+
+    #[structopt(short="m", long="mem", default_value="2000", help="Amount of memory for the indexer heap")]
+    pub memory_in_mb: usize,
 }
 
 #[derive(Debug)]
@@ -271,7 +277,7 @@ fn main() {
         println!("{}", style("").red().bold());
         return;
     }
-    let result = resume_indexing(&cli_options.index_directory, cli_options.shard_id);
+    let result = resume_indexing(&cli_options);
     if let Err(tantivy::Error::LockFailure(_)) = result {
         let msg = format!("Directory already locked. If another indexer is not running, just remove and retry.");
         println!("{}", style(msg).red().bold());
@@ -282,10 +288,14 @@ fn main() {
     }
 }
 
-fn indexing_wet_queue(index: Index, wet_queue: Receiver<WetData>, progress_bar: ProgressBar) -> tantivy::Result<()> {
+fn indexing_wet_queue(index: Index,
+                      wet_queue: Receiver<WetData>,
+                      progress_bar: ProgressBar,
+                      cli_options: &CliOption
+) -> tantivy::Result<()> {
     progress_bar.tick();
     let schema = index.schema();
-    let mut index_writer = index.writer_with_num_threads(2, 1_400_000_000)?;
+    let mut index_writer = index.writer_with_num_threads(cli_options.num_threads, cli_options.memory_in_mb* 1_000)?;
 
     for wet_files in wet_queue.into_iter().chunks(CHUNK_SIZE).into_iter() {
         let mut checkpoint = String::new();
@@ -341,10 +351,10 @@ fn indexing_wet_queue(index: Index, wet_queue: Receiver<WetData>, progress_bar: 
     Ok(())
 }
 
-fn resume_indexing(shards_directory: &Path, shard_id: usize) -> tantivy::Result<()> {
-    let mut wet_files = WetFiles::for_shard_id(shard_id);
-
-    let index_directory = init(shards_directory, shard_id)?;
+fn resume_indexing(cli_options: &CliOption) -> tantivy::Result<()> {
+    let cli_options: CliOption = (*cli_options).clone();
+    let mut wet_files = WetFiles::for_shard_id(cli_options.shard_id);
+    let index_directory = init(&cli_options.index_directory, cli_options.shard_id)?;
     let index = Index::open_in_dir(index_directory)?;
     // overriding `en_stem` to remove alphanum only characters.
     // ... That way it will only affect indexing and not querying.
@@ -382,7 +392,7 @@ fn resume_indexing(shards_directory: &Path, shard_id: usize) -> tantivy::Result<
 
     { index.writer_with_num_threads(1, 30_000_000)?; }
     let _indexing_thread = thread::spawn(move || {
-        indexing_wet_queue(index,recv, index_progress_bar).unwrap();
+        indexing_wet_queue(index,recv, index_progress_bar, &cli_options).unwrap();
     });
 
     progress_bars.join_and_clear().unwrap();
