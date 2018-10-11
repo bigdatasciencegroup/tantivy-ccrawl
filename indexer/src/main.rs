@@ -295,7 +295,7 @@ fn indexing_wet_queue(index: Index,
 ) -> tantivy::Result<()> {
     progress_bar.tick();
     let schema = index.schema();
-    let mut index_writer = index.writer_with_num_threads(cli_options.num_threads, cli_options.memory_in_mb* 1_000)?;
+    let mut index_writer = index.writer_with_num_threads(cli_options.num_threads, cli_options.memory_in_mb* 1_000_000)?;
 
     for wet_files in wet_queue.into_iter().chunks(CHUNK_SIZE).into_iter() {
         let mut checkpoint = String::new();
