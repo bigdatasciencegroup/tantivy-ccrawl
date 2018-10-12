@@ -366,7 +366,7 @@ fn resume_indexing(cli_options: &CliOption) -> tantivy::Result<()> {
     }
 
     let num_wet_files_remaining = wet_files.len();
-    let num_wet_files_indexed = 250 - num_wet_files_remaining;
+    let num_wet_files_indexed = num_per_shards - num_wet_files_remaining;
 
     let progress_bars = Arc::new(MultiProgress::new());
 
