@@ -73,15 +73,15 @@ struct WetFiles {
 
 impl WetFiles {
 
-    fn for_shard_id(shard_id: usize, nshards: usize) -> WetFiles {
+    fn for_shard_id(shard_id: usize, num_per_shards: usize) -> WetFiles {
         let urls_text = include_str!("urls-list.txt");
         let urls: Vec<String> = urls_text
             .lines()
             .map(|s| s.to_string())
             .collect();
-        let num_per_shards = (urls.len() + nshards - 1) / nshards;
         let start_idx = num_per_shards * shard_id;
-        let stop_idx = num_per_shards * (shard_id + 1);
+        let stop_idx = (start_idx + num_per_shards).min(urls.len());
+        println!("Range {} {}", start_idx, stop_idx);
         let urls = urls[start_idx..stop_idx].to_owned();
         assert!(!urls.is_empty());
         WetFiles {
@@ -345,7 +345,8 @@ fn indexing_wet_queue(index: Index,
 
 fn resume_indexing(cli_options: &CliOption) -> tantivy::Result<()> {
     let cli_options: CliOption = (*cli_options).clone();
-    let mut wet_files = WetFiles::for_shard_id(cli_options.shard_id, cli_options.total_num_shards);
+    let num_per_shards = (80_000 + cli_options.total_num_shards - 1) / cli_options.total_num_shards;
+    let mut wet_files = WetFiles::for_shard_id(cli_options.shard_id, num_per_shards);
     let index_directory = init(&cli_options.index_directory, cli_options.shard_id)?;
     let index = Index::open_in_dir(index_directory)?;
     // overriding `en_stem` to remove alphanum only characters.
