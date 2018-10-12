@@ -265,10 +265,6 @@ fn index_wet_file(wet_data: &WetData, schema: &Schema, index_writer: &mut IndexW
 fn main() {
     env_logger::init().unwrap();
     let cli_options = CliOption::from_args();
-    if !(cli_options.shard_id >= 1 && cli_options.shard_id <= 80) {
-        println!("{}", style("").red().bold());
-        return;
-    }
     let result = resume_indexing(&cli_options);
     if let Err(tantivy::Error::LockFailure(_)) = result {
         let msg = format!("Directory already locked. If another indexer is not running, just remove and retry.");
