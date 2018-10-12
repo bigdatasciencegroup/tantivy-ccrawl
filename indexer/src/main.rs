@@ -47,26 +47,17 @@ const URL_ROOT: &'static str = "https://commoncrawl.s3.amazonaws.com/crawl-data/
 
 const WAIT_AFTER_RETRY_SECONDS: u64 = 30u64;
 
-fn parse_shard_id(src: &str) -> Result<usize, String> {
-    if let Ok(shard_id) = src.parse() {
-        if shard_id >= 1 && shard_id <= 80 {
-            Ok(shard_id)
-        } else {
-            Err(String::from("Shard id much be between 1-80."))
-        }
-    } else {
-        Err(format!("{:?} is not an integer", src))
-    }
-}
-
 #[derive(StructOpt, Clone, Debug)]
 struct CliOption {
     /// Needed parameter, the first on the command line.
     #[structopt(short="i", long="index", help="Index directory", parse(from_os_str))]
     pub index_directory: PathBuf,
 
-    #[structopt(short="s", long="shard", parse(try_from_str="parse_shard_id"), help="Shard id (number between 1-80)")]
+    #[structopt(short="s", long="shard", default_value="0", help="Shard id (number between 1-80)")]
     pub shard_id: usize,
+
+    #[structopt(short="ns", long="nshards", default_value="360", help="Total num shards")]
+    pub total_num_shards: usize,
 
     #[structopt(short="t", long="num_threads", default_value="2", help="Number of threads")]
     pub num_threads: usize,
@@ -82,14 +73,15 @@ struct WetFiles {
 
 impl WetFiles {
 
-    fn for_shard_id(shard_id: usize) -> WetFiles {
+    fn for_shard_id(shard_id: usize, nshards: usize) -> WetFiles {
         let urls_text = include_str!("urls-list.txt");
         let urls: Vec<String> = urls_text
             .lines()
             .map(|s| s.to_string())
             .collect();
-        let start_idx = 250 * (shard_id - 1);
-        let stop_idx = 250 * shard_id;
+        let num_per_shards = (urls.len() + nshards - 1) / nshards;
+        let start_idx = num_per_shards * shard_id;
+        let stop_idx = num_per_shards * (shard_id + 1);
         let urls = urls[start_idx..stop_idx].to_owned();
         assert!(!urls.is_empty());
         WetFiles {
@@ -353,7 +345,7 @@ fn indexing_wet_queue(index: Index,
 
 fn resume_indexing(cli_options: &CliOption) -> tantivy::Result<()> {
     let cli_options: CliOption = (*cli_options).clone();
-    let mut wet_files = WetFiles::for_shard_id(cli_options.shard_id);
+    let mut wet_files = WetFiles::for_shard_id(cli_options.shard_id, cli_options.total_num_shards);
     let index_directory = init(&cli_options.index_directory, cli_options.shard_id)?;
     let index = Index::open_in_dir(index_directory)?;
     // overriding `en_stem` to remove alphanum only characters.
@@ -373,7 +365,7 @@ fn resume_indexing(cli_options: &CliOption) -> tantivy::Result<()> {
     }
 
     let num_wet_files_remaining = wet_files.len();
-    let num_wet_files_indexed = 1_000 - num_wet_files_remaining;
+    let num_wet_files_indexed = 250 - num_wet_files_remaining;
 
     let progress_bars = Arc::new(MultiProgress::new());
 
