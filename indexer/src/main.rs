@@ -116,7 +116,7 @@ fn schema() -> Schema {
 
 
 fn init(index_directory: &Path, shard_id: usize) -> tantivy::Result<PathBuf> {
-    let shard_subdir = format!("shard_{:02}", shard_id);
+    let shard_subdir = format!("shard_{:03}", shard_id);
     let shard_directory = index_directory.join(&shard_subdir); 
     if !shard_directory.exists() {
         fs::create_dir(&shard_directory)?;
@@ -264,14 +264,15 @@ fn main() -> tantivy::Result<()> {
     env_logger::init().unwrap();
     let cli_options = CliOption::from_args();
     resume_indexing(&cli_options)?;
-    println!("Indexing succeeded merging");
-    merge_all(&cli_options.index_directory)?;
+    println!("Indexing succeeded indexing");
+    merge_all(&cli_options)?;
     Ok(())
 }
 
 
-fn merge_all(index_path: &Path) -> tantivy::Result<()> {
-    let index = Index::open_in_dir(index_path)?;
+fn merge_all(cli_options: &CliOption    ) -> tantivy::Result<()> {
+    let index_directory = init(&cli_options.index_directory, cli_options.shard_id)?;
+    let index = Index::open_in_dir(index_directory)?;
     let segment_ids = index.searchable_segment_ids()?;
     let mut index_writer = index.writer_with_num_threads(1, 10_000_000)?;
     index_writer.garbage_collect_files()?;
@@ -309,41 +310,7 @@ fn indexing_wet_queue(index: Index,
     }
     progress_bar.finish();
 
-    index_writer.wait_merging_threads()?;
-
-    loop {
-        let mut segment_metas: Vec<SegmentMeta> = index.searchable_segment_metas()?;
-        segment_metas.sort_by_key(|segment_meta| segment_meta.max_doc());
-        let num_segments_to_merge = {
-            if segment_metas.len() <= 10 {
-                segment_metas.len()
-            } else if segment_metas.len() <= 16 {
-                segment_metas.len() / 2
-            } else {
-                8
-            }
-        };
-
-        if num_segments_to_merge <= 1 {
-            break;
-        }
-        info!("Merging {} segments", num_segments_to_merge);
-        let segment_ids: Vec<SegmentId> = segment_metas[..num_segments_to_merge]
-            .iter()
-            .map(|meta| meta.id())
-            .collect();
-
-        let mut index_writer = index
-            .writer_with_num_threads(1, 10_000_000)?;
-
-        info!("Garbage collect irrelevant segments.");
-        index_writer.garbage_collect_files()?;
-
-        index_writer
-            .merge(&segment_ids)?
-            .wait()
-            .expect("Merge failed");
-    }
+    index_writer.wait_merging_threads()?; 
 
     Ok(())
 }

@@ -1110,7 +1110,6 @@ name = "tantivy-commoncrawl"
 version = "0.1.0"
 dependencies = [
  "chan 0.1.21 (registry+https://github.com/rust-lang/crates.io-index)",
- "console 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "curl 0.4.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "flate2 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
