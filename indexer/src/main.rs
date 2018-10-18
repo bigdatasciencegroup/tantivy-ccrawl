@@ -1,7 +1,7 @@
 extern crate curl;
 extern crate structopt;
-#[macro_use]
 extern crate structopt_derive;
+
 #[macro_use] extern crate log;
 extern crate env_logger;
 #[macro_use]
@@ -14,7 +14,6 @@ extern crate flate2;
 extern crate rayon;
 extern crate futures;
 extern crate indicatif;
-extern crate console;
 
 use futures::future::Future;
 use flate2::read::MultiGzDecoder;
@@ -37,7 +36,6 @@ use itertools::Itertools;
 use std::sync::Arc;
 use indicatif::ProgressStyle;
 use chan::Receiver;
-use console::style;
 
 
 /// Number of WET files in a commit.
@@ -262,18 +260,29 @@ fn index_wet_file(wet_data: &WetData, schema: &Schema, index_writer: &mut IndexW
 }
 
 
-fn main() {
+fn main() -> tantivy::Result<()> {
     env_logger::init().unwrap();
     let cli_options = CliOption::from_args();
-    let result = resume_indexing(&cli_options);
-    if let Err(tantivy::Error::LockFailure(_)) = result {
-        let msg = format!("Directory already locked. If another indexer is not running, just remove and retry.");
-        println!("{}", style(msg).red().bold());
-        return;
+    resume_indexing(&cli_options)?;
+    println!("Indexing succeeded merging");
+    merge_all(&cli_options.index_directory)?;
+    Ok(())
+}
+
+
+fn merge_all(index_path: &Path) -> tantivy::Result<()> {
+    let index = Index::open_in_dir(index_path)?;
+    let segment_ids = index.searchable_segment_ids()?;
+    let mut index_writer = index.writer_with_num_threads(1, 10_000_000)?;
+    index_writer.garbage_collect_files()?;
+    if segment_ids.len() > 1 {
+        index_writer
+            .merge(&segment_ids)?.wait()
+            .expect("Merge failed");
     }
-    if let Err(e) = result {
-        println!("Failed with the following error:\n{:?}", style(e).red().bold());
-    }
+    index.load_searchers()?;
+    index_writer.garbage_collect_files()?;
+    Ok(())
 }
 
 fn indexing_wet_queue(index: Index,
@@ -373,7 +382,7 @@ fn resume_indexing(cli_options: &CliOption) -> tantivy::Result<()> {
     });
 
 
-    let index_progress_bar = progress_bars.add(ProgressBar::new(1_000));
+    let index_progress_bar = progress_bars.add(ProgressBar::new(num_per_shards as u64));
     index_progress_bar.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.yellow/blue}] {pos:>7}/{len:7} {eta}"));
 
